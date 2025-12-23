@@ -85,10 +85,10 @@ class RimToursDataSync:
     def sync_wordpress_to_postgres(self):
         """Sync WordPress ACF data to PostgreSQL"""
         print("🔄 Syncing WordPress ACF → PostgreSQL...")
-        
+
         df_web = pd.read_csv('data/input/website_export.csv', dtype=str)
         cur = self.postgres_conn.cursor()
-        
+
         for idx, row in df_web.iterrows():
             # Extract ACF field data
             meta = {
@@ -109,15 +109,18 @@ class RimToursDataSync:
                 'reservation_link': self.get_val(['reservation_link', '_reservation_link'], row),
                 'images': self.extract_image_filenames(self.get_val(['Image URL', 'Featured Image'], row))
             }
-            
+
+            # Get website URL from the links data if available
+            website_url = self.get_website_url_for_tour(row.get('Title', ''))
+
             # Update website_data table
             cur.execute("""
-                INSERT INTO website_data 
+                INSERT INTO website_data
                 (website_id, master_name, subtitle, region, skill_level, season,
                  short_description, long_description, departs_from, distance,
                  pricing_info, fees_info, special_notes, dates_available,
-                 reservation_link, images_filenames)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 reservation_link, images_filenames, website_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (website_id)
                 DO UPDATE SET
                     subtitle = EXCLUDED.subtitle,
@@ -133,6 +136,7 @@ class RimToursDataSync:
                     dates_available = EXCLUDED.dates_available,
                     reservation_link = EXCLUDED.reservation_link,
                     images_filenames = EXCLUDED.images_filenames,
+                    website_url = EXCLUDED.website_url,
                     last_synced = CURRENT_TIMESTAMP
             """, (
                 row.get('ID'),
@@ -154,12 +158,48 @@ class RimToursDataSync:
                 meta['special_notes'],
                 meta['dates'],
                 meta['reservation_link'],
-                meta['images']
+                meta['images'],
+                website_url
             ))
-        
+
         self.postgres_conn.commit()
         cur.close()
         print("✅ WordPress ACF → PostgreSQL sync completed")
+
+    def load_website_links(self):
+        """Load website links from CSV file"""
+        try:
+            df_links = pd.read_csv('data/input/rimtours_links.csv')
+            return df_links
+        except FileNotFoundError:
+            print("⚠️ Website links file not found, proceeding without URL mapping")
+            return pd.DataFrame()
+
+    def get_website_url_for_tour(self, tour_name):
+        """Find the website URL for a given tour name"""
+        df_links = self.load_website_links()
+        if df_links.empty:
+            return None
+
+        # Clean the tour name for matching
+        clean_tour_name = tour_name.lower().replace('/', '').replace('-', ' ').strip()
+
+        # Look for matches in the links data
+        for _, row in df_links.iterrows():
+            link_text = row['text'].lower()
+            # Direct match
+            if clean_tour_name in link_text or link_text in clean_tour_name:
+                return row['url']
+            # Partial match with common variations
+            if self.calculate_similarity(clean_tour_name, link_text) > 0.7:
+                return row['url']
+
+        return None
+
+    def calculate_similarity(self, str1, str2):
+        """Calculate similarity between two strings"""
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, str1, str2).ratio()
     
     def sync_postgres_to_outline(self):
         """Generate markdown and upload to Outline via API"""
@@ -169,7 +209,7 @@ class RimToursDataSync:
         
         # Get all tours with Arctic priority
         cur.execute("""
-            SELECT 
+            SELECT
                 t.id as tour_internal_id,
                 t.master_name,
                 COALESCE(t.shortname, 'N/A') as authoritative_shortname,
@@ -185,7 +225,8 @@ class RimToursDataSync:
                 w.images_filenames,
                 w.reservation_link,
                 w.special_notes,
-                COALESCE(t.updated_at, w.last_synced) as last_updated
+                COALESCE(t.updated_at, w.last_synced) as last_updated,
+                w.website_url
             FROM tours t
             LEFT JOIN website_data w ON t.arctic_id = w.website_id  -- This join might need adjustment
         """)
@@ -318,20 +359,23 @@ class RimToursDataSync:
     def generate_arctic_first_markdown(self, tour):
         """Generate markdown with Arctic data prioritized"""
         fees_info = {"bike_fee": "N/A", "camp_fee": "N/A", "shuttle_fee": "N/A"}
-        
-        return f"""# {tour[1]}
+
+        # Extract website URL from the tour data (assuming it's in tour[18] based on updated query)
+        website_url = tour[18] if len(tour) > 18 else None
+
+        markdown = f"""# {tour[1]}
 
 <!-- SYSTEM METADATA -->
-| Arctic Code | System Status | Last Updated |
-| :--- | :--- | :--- |
-| **{tour[2]}** | Synced | {tour[15].strftime('%Y-%m-%d %H:%M') if tour[15] else datetime.now().strftime('%Y-%m-%d %H:%M')} |
+| Arctic Code | System Status | Last Updated | Website URL |
+| :--- | :--- | :--- | :--- |
+| **{tour[2]}** | Synced | {tour[15].strftime('%Y-%m-%d %H:%M') if tour[15] else datetime.now().strftime('%Y-%m-%d %H:%M')} | {website_url or 'N/A'} |
 
 ---
 
 ## 1. The Shared DNA
-**Subtitle:** {tour[6] or ''}  
-**Region:** {tour[7] or ''}  
-**Skill Level:** {tour[8] or ''}  
+**Subtitle:** {tour[6] or ''}
+**Region:** {tour[7] or ''}
+**Skill Level:** {tour[8] or ''}
 **Season:** {tour[9] or ''}
 
 **Short Description:**
@@ -348,9 +392,20 @@ class RimToursDataSync:
 **Duration:** {tour[4] or 'N/A'}
 **Type:** {tour[5] or 'N/A'}
 
+## 🌐 Website Links
+"""
+
+        if website_url:
+            markdown += f"- **Tour Page:** [{website_url}]({website_url})\n"
+
+        if tour[16]:  # reservation link
+            markdown += f"- **Reservation Link:** [{tour[16]}]({tour[16]})\n"
+
+        markdown += f"""
+
 ## 💰 Fees & Logistics
 | Item | Cost / Details |
-| :--- | :--- |
+| :--- | :--- | :--- |
 | **Bike Rental** | {fees_info.get('bike_fee', 'N/A')} |
 | **Camp Kit** | {fees_info.get('camp_fee', 'N/A')} |
 | **Shuttle Service** | {fees_info.get('shuttle_fee', 'N/A')} |
@@ -358,7 +413,6 @@ class RimToursDataSync:
 ## 📋 Additional Information
 **Departs From:** {tour[13] or ''}
 **Distance:** {tour[14] or ''}
-**Reservation Link:** {tour[16] or ''}
 **Special Notes:** {tour[17] or ''}
 
 ---
@@ -371,6 +425,7 @@ class RimToursDataSync:
 ## 3. Full Content
 {tour[11] or ''}
 """
+        return markdown
     
     def find_outline_document(self, title):
         """Find existing document by title"""

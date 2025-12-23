@@ -47,6 +47,7 @@ CREATE TABLE website_data (
     dates_available TEXT,          -- From ACF fields
     images_filenames TEXT,         -- From ACF fields
     reservation_link TEXT,         -- From ACF fields
+    website_url TEXT,              -- Direct website URL from scraped links
     last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
