@@ -1,0 +1,36 @@
+# Environment variables
+.env
+*.env
+
+# Data files (too large for Git)
+data/input/*
+!data/input/.gitkeep
+data/output/*
+!data/output/.gitkeep
+
+# Database
+*.db
+*.sqlite3
+
+# Credentials
+*.key
+*.pem
+*.crt
+
+# Appsmith local configs
+appsmith/*.local
+appsmith/*.tmp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
